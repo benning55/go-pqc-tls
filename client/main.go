@@ -1,99 +1,110 @@
 package main
 
 import (
-	"crypto/ecdsa"
-	"crypto/elliptic"
+	"crypto/aes"
+	"crypto/cipher"
+	"crypto/ecdh"
 	"crypto/rand"
 	"crypto/tls"
-	"crypto/x509"
-	"crypto/x509/pkix"
-	"encoding/pem"
 	"fmt"
-	"math/big"
-	"net"
-	"time"
 
-	"go.dedis.ch/kyber/v4/group/edwards25519"
-	"go.dedis.ch/kyber/v4/util/random"
+	"github.com/cloudflare/circl/kem/kyber/kyber512"
 	"golang.org/x/crypto/sha3"
 )
 
 func main() {
-	// Generate self-signed EC certificate
-	certPEM, keyPEM := generateSelfSignedCert()
-
-	// Load certificate properly
-	certPair, err := tls.X509KeyPair(certPEM, keyPEM)
+	config := &tls.Config{InsecureSkipVerify: true}
+	conn, err := tls.Dial("tcp", "localhost:4433", config)
 	if err != nil {
 		panic(err)
 	}
-
-	config := &tls.Config{
-		Certificates: []tls.Certificate{certPair},
-	}
-
-	listener, err := tls.Listen("tcp", ":4433", config)
-	if err != nil {
-		panic(err)
-	}
-	defer listener.Close()
-	fmt.Println("Hybrid TLS Server Running on port 4433...")
-
-	for {
-		conn, err := listener.Accept()
-		if err != nil {
-			fmt.Println("Connection failed:", err)
-			continue
-		}
-		go handleConnection(conn)
-	}
-}
-
-func handleConnection(conn net.Conn) {
 	defer conn.Close()
 
-	// **Step 1: Perform ECDH Key Exchange**
-	curve := elliptic.P256()
-	_, x, y, err := elliptic.GenerateKey(curve, rand.Reader) // ✅ Removed unused `priv`
+	// ECDH Key Exchange
+	curve := ecdh.P256()
+	clientPriv, err := curve.GenerateKey(rand.Reader)
 	if err != nil {
-		fmt.Println("ECDH Error:", err)
+		fmt.Println("❌ ECDH Error:", err)
 		return
 	}
-	ecdhSharedKey := fmt.Sprintf("%x%x", x, y)
-
-	// **Step 2: Perform Kyber Key Encapsulation**
-	suite := edwards25519.NewBlakeSHA256Ed25519() // ✅ Correct function
-	kyberSecret := suite.Scalar().Pick(random.New())
-
-	// ✅ Serialize Kyber Scalar Correctly
-	kyberBytes, _ := kyberSecret.MarshalBinary() // ✅ Corrected method
-
-	// **Step 3: Hybrid Key Derivation (ECDH + Kyber)**
-	hasher := sha3.New256()
-	hasher.Write([]byte(ecdhSharedKey)) // Add ECDH shared secret
-	hasher.Write(kyberBytes)            // Add Kyber shared secret
-	hybridKey := hasher.Sum(nil)        // Hash to create hybrid key
-
-	fmt.Println("Hybrid Shared Key:", hybridKey)
-	conn.Write([]byte("Kyber + ECDH Secured Connection Established\n"))
-}
-
-// **🔹 Generate a self-signed EC certificate and return PEM data**
-func generateSelfSignedCert() (certPEM, keyPEM []byte) {
-	priv, _ := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
-	template := x509.Certificate{
-		SerialNumber: big.NewInt(1),
-		Subject:      pkix.Name{CommonName: "Hybrid TLS Server"},
-		NotBefore:    time.Now(),
-		NotAfter:     time.Now().Add(365 * 24 * time.Hour),
-		KeyUsage:     x509.KeyUsageKeyEncipherment | x509.KeyUsageDigitalSignature,
-		ExtKeyUsage:  []x509.ExtKeyUsage{x509.ExtKeyUsageServerAuth},
+	clientPub := clientPriv.PublicKey().Bytes()
+	serverPubBytes := make([]byte, 65)
+	_, err = conn.Read(serverPubBytes)
+	if err != nil {
+		fmt.Println("❌ Failed to receive ECDH key:", err)
+		return
 	}
-	certDER, _ := x509.CreateCertificate(rand.Reader, &template, &template, &priv.PublicKey, priv)
-	certPEM = pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: certDER})
+	serverPub, err := curve.NewPublicKey(serverPubBytes)
+	if err != nil {
+		fmt.Println("❌ Invalid server public key:", err)
+		return
+	}
+	ecdhSharedKey, err := clientPriv.ECDH(serverPub)
+	if err != nil {
+		fmt.Println("❌ ECDH computation failed:", err)
+		return
+	}
+	_, err = conn.Write(clientPub)
+	if err != nil {
+		fmt.Println("❌ Failed to send ECDH key:", err)
+		return
+	}
 
-	keyDER, _ := x509.MarshalECPrivateKey(priv)
-	keyPEM = pem.EncodeToMemory(&pem.Block{Type: "EC PRIVATE KEY", Bytes: keyDER})
+	// Kyber-512 KEM
+	sch := kyber512.Scheme()
+	kyberPubBytes := make([]byte, kyber512.PublicKeySize) // 768 bytes
+	_, err = conn.Read(kyberPubBytes)
+	if err != nil {
+		fmt.Println("❌ Failed to receive Kyber public key:", err)
+		return
+	}
+	kyberPub, err := sch.UnmarshalBinaryPublicKey(kyberPubBytes)
+	if err != nil {
+		fmt.Println("❌ Invalid Kyber public key:", err)
+		return
+	}
+	kyberCiphertext, kyberShared, err := sch.Encapsulate(kyberPub)
+	if err != nil {
+		fmt.Println("❌ Kyber encapsulation failed:", err)
+		return
+	}
+	_, err = conn.Write(kyberCiphertext)
+	if err != nil {
+		fmt.Println("❌ Failed to send Kyber ciphertext:", err)
+		return
+	}
 
-	return certPEM, keyPEM
+	// Hybrid Key: Concatenate ECDH + Kyber, then hash
+	hasher := sha3.New256()
+	hasher.Write(ecdhSharedKey)
+	hasher.Write(kyberShared)
+	hybridKey := hasher.Sum(nil)
+	fmt.Println("✅ Client Hybrid Key:", hybridKey)
+
+	// Decrypt server message
+	buffer := make([]byte, 1024)
+	n, err := conn.Read(buffer)
+	if err != nil {
+		fmt.Println("❌ Failed to read encrypted message:", err)
+		return
+	}
+	ciphertext := buffer[:n]
+	block, err := aes.NewCipher(hybridKey)
+	if err != nil {
+		fmt.Println("❌ AES key setup failed:", err)
+		return
+	}
+	gcm, err := cipher.NewGCM(block)
+	if err != nil {
+		fmt.Println("❌ GCM setup failed:", err)
+		return
+	}
+	nonceSize := gcm.NonceSize()
+	nonce, ciphertext := ciphertext[:nonceSize], ciphertext[nonceSize:]
+	plaintext, err := gcm.Open(nil, nonce, ciphertext, nil)
+	if err != nil {
+		fmt.Println("❌ Decryption failed:", err)
+		return
+	}
+	fmt.Println("📩 Server:", string(plaintext))
 }
