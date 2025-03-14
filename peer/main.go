@@ -46,7 +46,7 @@ var (
 
 func main() {
 	listenPort := flag.String("listen", ":4433", "Port to listen on")
-	connectAddrs := flag.String("connect", "localhost:4434", "Comma-separated addresses to connect to")
+	connectAddrs := flag.String("connect", "", "Comma-separated addresses to connect to")
 	flag.Parse()
 
 	connectList := splitAddrs(*connectAddrs)

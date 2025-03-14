@@ -94,3 +94,10 @@ You start three apps:
   hasher.Write(ecdhSharedKey)
   hasher.Write(kyberShared)
   hybridKey := hasher.Sum(nil)
+
+
+#### 4. Run via docker
+  ```go
+  docker build -t peer-tls .
+  docker run -it --rm -p 4433:4433 peer-tls -listen :4433
+  docker run -it --rm -p 4433:4433 peer-chat:arm64 -listen :4433
