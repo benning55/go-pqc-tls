@@ -5,6 +5,9 @@ CLIENT_SRC := client/main.go
 SERVER_BIN := $(BINDIR)/server
 CLIENT_BIN := $(BINDIR)/client
 
+PEER_SRC := peer/main.go
+PEER_BIN := $(BINDIR)/peer
+
 # Phony targets (not tied to files)
 .PHONY: all build clean test test_coverage dep vet lint
 
@@ -12,7 +15,7 @@ CLIENT_BIN := $(BINDIR)/client
 all: build
 
 # Build both server and client
-build: $(SERVER_BIN) $(CLIENT_BIN)
+build: $(SERVER_BIN) $(CLIENT_BIN) $(PEER_BIN)
 	@echo "\033[1mBuild completed successfully\033[0m"
 
 # Build server
@@ -26,6 +29,13 @@ $(CLIENT_BIN): $(CLIENT_SRC) go.mod
 	@echo "\033[1mBuilding client...\033[0m"
 	@cd ./client && go build -o ../$(CLIENT_BIN) .
 	@chmod +x $(CLIENT_BIN)
+
+
+# Build peer
+$(PEER_BIN): $(PEER_SRC) go.mod
+	@echo "\033[1mBuilding peer...\033[0m"
+	@cd ./peer && go build -o ../$(PEER_BIN) .
+	@chmod +x $(PEER_BIN)
 
 # Clean up binaries and Go cache
 clean:
