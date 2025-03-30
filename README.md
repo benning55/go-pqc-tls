@@ -96,6 +96,20 @@ You start three apps:
   hybridKey := hasher.Sum(nil)
 
 
+#### 5. Various type of Hybrid encryption
+##### Pure ECDH
+./bin/peer -listen :4433
+./bin/peer -listen :4434 -connect "localhost:4433"
+##### Kyber
+./bin/peer -listen :4433 -pqc kyber
+./bin/peer -listen :4434 -connect "localhost:4433"  -pqc kyber
+##### frodo
+./bin/peer -listen :4433 -pqc frodo
+./bin/peer -listen :4434 -connect "localhost:4433"  -pqc frodo
+##### mlkem
+./bin/peer -listen :4433 -pqc mlkem
+./bin/peer -listen :4434 -connect "localhost:4433"  -pqc mlkem
+
 #### 4. Run via docker
   ```go
   docker build -t peer-tls .
