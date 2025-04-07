@@ -53,7 +53,7 @@ type Peer struct {
 	hybridKey []byte
 	addr      string
 	localPort string
-	pqcAlgo   string // Store the PQC algorithm used by this peer
+	pqcAlgo   string
 }
 
 type MessageHeader struct {
@@ -69,7 +69,7 @@ var (
 	peersMu       sync.Mutex
 	receivedFiles = make(map[string]map[uint32][]byte)
 	filesMu       sync.Mutex
-	testMode      bool // Global flag to indicate test mode
+	testMode      bool
 )
 
 func runPerformanceTest(listenPort, pqcAlgo string, connectList []string) {
@@ -138,7 +138,6 @@ func runPerformanceTest(listenPort, pqcAlgo string, connectList []string) {
 			continue
 		}
 
-		// Convert to milliseconds with 3 decimal places
 		encryptMs := float64(encryptDuration.Nanoseconds()) / 1e6
 		decryptMs := float64(decryptDuration.Nanoseconds()) / 1e6
 		sizeLabel := name
@@ -216,7 +215,6 @@ func splitAddrs(addrs string) []string {
 	return strings.Split(addrs, ",")
 }
 
-// Modified startListener to return listener and respect test mode
 func startListener(port, pqcAlgo string, isTest bool) (net.Listener, error) {
 	listener, err := net.Listen("tcp", port)
 	if err != nil {
@@ -226,7 +224,6 @@ func startListener(port, pqcAlgo string, isTest bool) (net.Listener, error) {
 	fmt.Printf("%s[INFO]%s Listening on %s\n", Green, Reset, port)
 
 	if isTest {
-		// In test mode, accept one connection and return
 		conn, err := listener.Accept()
 		if err != nil {
 			fmt.Printf("%s[ERROR]%s Accept failed: %v\n", Red, Reset, err)
@@ -236,7 +233,6 @@ func startListener(port, pqcAlgo string, isTest bool) (net.Listener, error) {
 		return listener, nil
 	}
 
-	// Normal mode: infinite loop
 	for {
 		conn, err := listener.Accept()
 		if err != nil {
@@ -270,7 +266,7 @@ func connectToPeer(addr, localPort, pqcAlgo string) {
 		if _, exists := peers[peer.addr]; !exists {
 			peers[peer.addr] = peer
 			fmt.Printf("%s[INFO]%s Connected to %s\n", Green, Reset, peer.addr)
-			if !testMode { // Only start receiveMessages in normal mode
+			if !testMode {
 				go receiveMessages(peer, localPort)
 			}
 		}
@@ -289,14 +285,13 @@ func handleIncoming(conn net.Conn, localPort, pqcAlgo string) {
 	if _, exists := peers[peer.addr]; !exists {
 		peers[peer.addr] = peer
 		fmt.Printf("%s[INFO]%s Accepted connection from %s\n", Green, Reset, peer.addr)
-		if !testMode { // Only start receiveMessages in normal mode
+		if !testMode {
 			go receiveMessages(peer, localPort)
 		}
 	}
 	peersMu.Unlock()
 }
 
-// getKEMScheme returns the KEM scheme based on the algorithm name
 func getKEMScheme(pqcAlgo string) (kem.Scheme, error) {
 	switch pqcAlgo {
 	case "kyber":
@@ -312,7 +307,6 @@ func getKEMScheme(pqcAlgo string) (kem.Scheme, error) {
 	}
 }
 
-// performPQCKeyExchange handles the PQC key exchange using the given scheme
 func performPQCKeyExchange(conn net.Conn, isServer bool, scheme kem.Scheme) ([]byte, error) {
 	if isServer {
 		pk, sk, err := scheme.GenerateKeyPair()
@@ -457,7 +451,6 @@ func establishConnection(conn net.Conn, isServer bool, localPort, remoteAddr, pq
 
 	totalDuration := time.Since(startTotal)
 
-	// Convert durations to milliseconds
 	totalMs := float64(totalDuration.Nanoseconds()) / 1e6
 	ecdhMs := float64(ecdhDuration.Nanoseconds()) / 1e6
 	hybridMs := float64(hybridDuration.Nanoseconds()) / 1e6
@@ -515,7 +508,8 @@ func receiveMessages(peer *Peer, localPort string) {
 			fmt.Printf("\n%s[ERROR]%s Decryption failed (possible PQC mismatch with %s): %v\n", Red, Reset, peer.addr, err)
 			return
 		}
-		fmt.Printf("%s[STATS]%s Decryption Time: %v\n", Cyan, Reset, decryptDuration)
+		decryptMs := float64(decryptDuration.Nanoseconds()) / 1e6
+		fmt.Printf("%s[STATS]%s Decryption Time: %.3f ms\n", Cyan, Reset, decryptMs)
 
 		header, payload, err := parseHeader(plaintext)
 		if err != nil {
@@ -629,8 +623,7 @@ func sendTextMessage(msg string) {
 
 	var totalEncryptTime time.Duration
 	for _, peer := range peers {
-		// Check PQC compatibility before sending
-		localPqc := peer.pqcAlgo // Assuming local node's pqcAlgo is stored somewhere; adjust if needed
+		localPqc := peer.pqcAlgo
 		if localPqc != peer.pqcAlgo {
 			fmt.Printf("%s[WARN]%s Cannot send to %s: PQC mismatch (local: %s, remote: %s)\n",
 				Yellow, Reset, peer.addr, localPqc, peer.pqcAlgo)
@@ -648,6 +641,9 @@ func sendTextMessage(msg string) {
 		encryptDuration := time.Since(startEncrypt)
 		totalEncryptTime += encryptDuration
 
+		encryptMs := float64(encryptDuration.Nanoseconds()) / 1e6
+		fmt.Printf("%s[STATS]%s Text Message Encryption to %s: %.3f ms\n", Cyan, Reset, peer.addr, encryptMs)
+
 		err := binary.Write(conn, binary.BigEndian, uint32(len(ciphertext)))
 		if err != nil {
 			fmt.Printf("%s[ERROR]%s Failed to send length to %s: %v\n", Red, Reset, peer.addr, err)
@@ -658,9 +654,9 @@ func sendTextMessage(msg string) {
 			fmt.Printf("%s[ERROR]%s Failed to send message to %s: %v\n", Red, Reset, peer.addr, err)
 			continue
 		}
-		fmt.Printf("%s[STATS]%s Text Message Encryption to %s: %v\n", Cyan, Reset, peer.addr, encryptDuration)
 	}
-	fmt.Printf("%s[STATS]%s Total Encryption Time for Text Message (%d bytes): %v\n", Cyan, Reset, len(data), totalEncryptTime)
+	totalEncryptMs := float64(totalEncryptTime.Nanoseconds()) / 1e6
+	fmt.Printf("%s[STATS]%s Total Encryption Time for Text Message (%d bytes): %.3f ms\n", Cyan, Reset, len(data), totalEncryptMs)
 }
 
 func sendFile(filename string) error {
@@ -712,14 +708,6 @@ func sendFile(filename string) error {
 		data = append(data, chunk...)
 
 		for _, peer := range peers {
-			// Check PQC compatibility before sending
-			localPqc := peer.pqcAlgo // Adjust if local node's pqcAlgo is stored elsewhere
-			if localPqc != peer.pqcAlgo {
-				fmt.Printf("%s[WARN]%s Cannot send file chunk to %s: PQC mismatch (local: %s, remote: %s)\n",
-					Yellow, Reset, peer.addr, localPqc, peer.pqcAlgo)
-				continue
-			}
-
 			conn := peer.conn
 			gcm := peer.gcm
 			conn.SetWriteDeadline(time.Now().Add(msgTimeout))
@@ -731,6 +719,9 @@ func sendFile(filename string) error {
 			encryptDuration := time.Since(startEncrypt)
 			totalEncryptTime += encryptDuration
 
+			encryptMs := float64(encryptDuration.Nanoseconds()) / 1e6
+			fmt.Printf("%s[STATS]%s Chunk %d Encryption to %s: %.3f ms\n", Cyan, Reset, chunkID, peer.addr, encryptMs)
+
 			err := binary.Write(conn, binary.BigEndian, uint32(len(ciphertext)))
 			if err != nil {
 				fmt.Printf("%s[ERROR]%s Failed to send chunk length to %s: %v\n", Red, Reset, peer.addr, err)
@@ -741,11 +732,11 @@ func sendFile(filename string) error {
 				fmt.Printf("%s[ERROR]%s Failed to send chunk to %s: %v\n", Red, Reset, peer.addr, err)
 				continue
 			}
-			fmt.Printf("%s[STATS]%s Chunk %d Encryption to %s: %v\n", Cyan, Reset, chunkID, peer.addr, encryptDuration)
 		}
 	}
-	fmt.Printf("%s[STATS]%s Total Encryption Time for %s (%d bytes, %d chunks): %v\n",
-		Cyan, Reset, filename, fileSize, totalChunks, totalEncryptTime)
+	totalEncryptMs := float64(totalEncryptTime.Nanoseconds()) / 1e6
+	fmt.Printf("%s[STATS]%s Total Encryption Time for %s (%d bytes, %d chunks): %.3f ms\n",
+		Cyan, Reset, filename, fileSize, totalChunks, totalEncryptMs)
 	fmt.Printf("%s[INFO]%s Sent file: %s\n", Green, Reset, filename)
 	return nil
 }
