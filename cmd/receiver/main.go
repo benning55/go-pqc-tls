@@ -7,9 +7,11 @@ import (
 	"fmt"
 	"net"
 	"os"
-	"path/filepath"
+	"time"
 
 	"github.com/benning55/go-pqc-tls/pkg/udp"
+	"github.com/cloudflare/circl/kem/kyber/kyber512"
+	"golang.org/x/crypto/sha3"
 )
 
 func main() {
@@ -19,6 +21,7 @@ func main() {
 	flag.Parse()
 
 	// Create TCP listener for key exchange
+	fmt.Printf("Waiting for key exchange on %s...\n", *listenPort)
 	tcpListener, err := net.Listen("tcp", *listenPort)
 	if err != nil {
 		fmt.Printf("Failed to listen on TCP port: %v\n", err)
@@ -26,7 +29,6 @@ func main() {
 	}
 	defer tcpListener.Close()
 
-	fmt.Printf("Waiting for key exchange on %s...\n", *listenPort)
 	tcpConn, err := tcpListener.Accept()
 	if err != nil {
 		fmt.Printf("Failed to accept TCP connection: %v\n", err)
@@ -56,21 +58,66 @@ func main() {
 		os.Exit(1)
 	}
 
-	// Compute shared secret
+	// Compute ECDH shared secret
 	remotePub, err := curve.NewPublicKey(remotePubKey)
 	if err != nil {
 		fmt.Printf("Invalid remote public key: %v\n", err)
 		os.Exit(1)
 	}
 
-	sharedKey, err := privKey.ECDH(remotePub)
+	ecdhSharedKey, err := privKey.ECDH(remotePub)
 	if err != nil {
-		fmt.Printf("Failed to compute shared secret: %v\n", err)
+		fmt.Printf("Failed to compute ECDH shared secret: %v\n", err)
 		os.Exit(1)
 	}
 
-	// Create UDP peer with shared key
-	peer, err := udp.NewSimpleUDPPeer(*listenPort, sharedKey)
+	// Perform Kyber key exchange
+	sch := kyber512.Scheme()
+	kyberPub, kyberPriv, err := sch.GenerateKeyPair()
+	if err != nil {
+		fmt.Printf("Kyber key generation failed: %v\n", err)
+		os.Exit(1)
+	}
+
+	kyberPubBytes, err := kyberPub.MarshalBinary()
+	if err != nil {
+		fmt.Printf("Failed to marshal Kyber public key: %v\n", err)
+		os.Exit(1)
+	}
+
+	if _, err := tcpConn.Write(kyberPubBytes); err != nil {
+		fmt.Printf("Failed to send Kyber public key: %v\n", err)
+		os.Exit(1)
+	}
+
+	kyberCiphertext := make([]byte, kyber512.CiphertextSize)
+	if _, err := tcpConn.Read(kyberCiphertext); err != nil {
+		fmt.Printf("Failed to receive Kyber ciphertext: %v\n", err)
+		os.Exit(1)
+	}
+
+	kyberShared, err := sch.Decapsulate(kyberPriv, kyberCiphertext)
+	if err != nil {
+		fmt.Printf("Kyber decapsulation failed: %v\n", err)
+		os.Exit(1)
+	}
+
+	// Derive hybrid key
+	hasher := sha3.New256()
+	hasher.Write(ecdhSharedKey)
+	hasher.Write(kyberShared)
+	hybridKey := hasher.Sum(nil)
+
+	// Create UDP peer with hybrid key and decryption log file
+	fmt.Println("Creating UDP peer...")
+	decryptLog, err := os.OpenFile("decrypt.json", os.O_RDWR|os.O_CREATE, 0644)
+	if err != nil {
+		fmt.Printf("Failed to create decryption log file: %v\n", err)
+		os.Exit(1)
+	}
+	defer decryptLog.Close()
+
+	peer, err := udp.NewSimpleUDPPeer(*listenPort, hybridKey, decryptLog)
 	if err != nil {
 		fmt.Printf("Failed to create UDP peer: %v\n", err)
 		os.Exit(1)
@@ -83,15 +130,16 @@ func main() {
 		os.Exit(1)
 	}
 
-	// Start listening for incoming files
-	fmt.Printf("Listening on %s for incoming files...\n", *listenPort)
-
-	// Create a temporary file to receive the data
-	tempFile := filepath.Join(*outputDir, "received_file")
-	if err := peer.ReceiveFile(tempFile); err != nil {
+	// Receive the file
+	fmt.Printf("Waiting to receive file in directory %s...\n", *outputDir)
+	startTime := time.Now()
+	if err := peer.ReceiveFile(*outputDir); err != nil {
 		fmt.Printf("Failed to receive file: %v\n", err)
 		os.Exit(1)
 	}
+	totalTime := time.Since(startTime)
 
-	fmt.Printf("File received and saved as: %s\n", tempFile)
+	fmt.Printf("\nTransfer Complete:\n")
+	fmt.Printf("Total Time: %.3f seconds\n", totalTime.Seconds())
+	fmt.Printf("Decryption metrics logged to: decrypt.json\n")
 }

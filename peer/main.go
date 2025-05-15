@@ -216,7 +216,7 @@ func splitAddrs(addrs string) []string {
 }
 
 func startListener(port, pqcAlgo string, isTest bool) (net.Listener, error) {
-	listener, err := net.Listen("tcp", port)
+	listener, err := net.Listen("quic", port)
 	if err != nil {
 		fmt.Printf("%s[ERROR]%s Failed to listen on %s: %v\n", Red, Reset, port, err)
 		return nil, err
@@ -250,7 +250,7 @@ func connectToPeer(addr, localPort, pqcAlgo string) {
 			fmt.Printf("%s[ERROR]%s Timeout connecting to %s after %v\n", Red, Reset, addr, maxConnectTime)
 			return
 		}
-		conn, err := net.Dial("tcp", addr)
+		conn, err := net.Dial("quic", addr)
 		if err != nil {
 			fmt.Printf("%s[WARN]%s Failed to connect to %s: %v, retrying in %v\n", Yellow, Reset, addr, err, reconnectDelay)
 			time.Sleep(reconnectDelay)

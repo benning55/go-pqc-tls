@@ -1,117 +1,298 @@
 # go-pqc-tls
 
-# Project Overview
+A Go implementation of a hybrid cryptographic system combining classical (ECDH) and post-quantum cryptography (PQC) for secure communication over both TLS and UDP protocols.
 
-This project implements a hybrid cryptographic system combining ECDH (classical) and Kyber-512 (post-quantum) key exchanges to derive a shared symmetric key, used for AES-GCM encrypted communication over a TLS connection.
+## Project Structure
 
+- `peer/main.go`: Main peer-to-peer chat application with hybrid encryption (ECDH + PQC)
+- `server/`: TLS server implementation
+- `client/`: TLS client implementation
+- `cmd/`: Command-line tools
+  - `sender/`: UDP hybrid sender implementation
+  - `receiver/`: UDP hybrid receiver implementation
 
-## Server (server.go)
-- Purpose: Acts as the secure communication endpoint.
-- Actions:
-  - Sets up a TLS server on port 4433 with a self-signed certificate.
-  - Performs ECDH and Kyber-512 key exchanges with the client.
-  - Derives a hybrid key from both exchanges using SHA3-256.
-  - Encrypts "Hello from server!" with AES-GCM and sends it to the client.
+## Prerequisites
 
+- Go 1.16 or later
+- Required Go packages (automatically installed via `go mod`):
+  - `golang.org/x/crypto/kyber`
+  - `crypto/tls`
+  - `crypto/ecdsa`
+  - `crypto/elliptic`
+  - `crypto/rand`
 
-## Client (client.go)
-- Purpose: Connects to the server and verifies secure communication.
-- Actions:
-  - Establishes a TLS connection to localhost:4433.
-  - Completes ECDH and Kyber-512 key exchanges with the server.
-  - Derives the same hybrid key using SHA3-256.
-  - Receives, decrypts, and displays the server’s encrypted message.
+## Running the Applications
 
+### 1. Peer-to-Peer Chat with Hybrid Encryption
 
-## Peer (peer.go)
+The peer application implements a hybrid encryption scheme combining ECDH (classical) and post-quantum cryptography. After connecting, you can use the following commands in the chat interface:
 
-`peer.go` creates a network of chat peers that:
-- **Listen** for incoming connections on a specified port (e.g., `:4433`).
-- **Connect** to other peers via a configurable list (e.g., `localhost:4434,localhost:4435`).
-- **Encrypt and Send** messages securely to all connected peers.
-- **Receive and Decrypt** messages, displaying them with timestamps in a polished format.
+- `sendfile <path>`: Send a file to all connected peers
+- `help`: Display available commands
+- `exit`: Close the connection and exit
+- Regular text messages are sent to all connected peers
 
-You start three apps:
-./bin/peer -listen :4433 -connect "localhost:4434,localhost:4435"
-./bin/peer -listen :4434 -connect "localhost:4433,localhost:4435"
-./bin/peer -listen :4435 -connect "localhost:4433,localhost:4434"
+#### Pure ECDH Mode (Classical Only)
+```bash
+# Terminal 1
+go run peer/main.go -listen :4433
 
+# Terminal 2
+go run peer/main.go -listen :4434 -connect "localhost:4433"
+```
 
-### How It Works
+#### Hybrid ECDH + Kyber Mode
+```bash
+# Terminal 1
+go run peer/main.go -listen :4433 -pqc kyber
 
-#### Program Structure
+# Terminal 2
+go run peer/main.go -listen :4434 -connect "localhost:4433" -pqc kyber
+```
 
-#### Main Setup
-- Parses flags and initializes a `peers` map to track connections.
-- Launches a listener and connects to peers concurrently.
-- Waits up to 30 seconds for all peers to join before starting the chat.
+#### Hybrid ECDH + Frodo Mode
+```bash
+# Terminal 1
+go run peer/main.go -listen :4433 -pqc frodo
 
-#### Networking
-- **`startListener`**: Runs a TCP server, accepting connections and spawning `handleIncoming` goroutines.
-- **`connectToPeer`**: Dials peers with a 2-second retry loop, timing out after 30 seconds.
-- **`handleIncoming`**: Processes incoming connections, avoiding duplicates in the `peers` map.
+# Terminal 2
+go run peer/main.go -listen :4434 -connect "localhost:4433" -pqc frodo
+```
 
-#### Chat Logic
-- **`chatLoop`**: Reads input with `bufio.Scanner`, sends non-empty messages to peers, and echoes them locally.
-- **`receiveMessages`**: Listens for incoming encrypted messages, decrypts them, and displays them with timestamps.
+#### Hybrid ECDH + ML-KEM Mode
+```bash
+# Terminal 1
+go run peer/main.go -listen :4433 -pqc mlkem
 
-#### Encryption
-- **`establishConnection`**: Sets up a secure channel per peer using hybrid encryption.
+# Terminal 2
+go run peer/main.go -listen :4434 -connect "localhost:4433" -pqc mlkem
+```
 
-### Peer Management
+### 2. UDP Hybrid Sender/Receiver
 
-- **Data Structure**: A `map[string]*Peer` (`peers`) stores each peer’s connection and encryption details.
-- **Thread Safety**: Protected by `peersMu` (`sync.Mutex`) to handle concurrent access.
+The UDP implementation provides a lightweight alternative for secure communication using hybrid encryption:
 
----
+#### Running the Receiver
+```bash
+# Start the receiver on port 8080
+go run cmd/receiver/main.go -port 8080
+```
 
-### Security: Hybrid Encryption Deep Dive
+#### Running the Sender
+```bash
+# Send a message to the receiver
+go run cmd/sender/main.go -addr localhost:8080 -message "Hello, secure UDP!"
 
-`peer.go` uses a **hybrid encryption** scheme that blends asymmetric and symmetric cryptography for maximum security. Here’s how it keeps your chats safe:
+# Send a file to the receiver
+go run cmd/sender/main.go -addr localhost:8080 -file /path/to/your/file.txt
+```
 
-#### 1. Authentication with ECDSA
-- **Tech**: Elliptic Curve Digital Signature Algorithm (P-256 curve).
-- **Process**:
-  - Each peer has a static ECDSA key pair (`privKey`).
-  - Server sends its public key and signs a challenge (client’s port).
-  - Client sends a challenge and receives the signature.
-- **Security**: Lays the groundwork for identity verification (though not fully enforced—see weaknesses).
+### 3. TLS Server-Client Example
 
-#### 2. Key Exchange
-- **ECDH (Elliptic Curve Diffie-Hellman)**:
-  - Generates a fresh P-256 key pair per connection.
-  - Exchanges public keys to compute a shared secret (`ecdhSharedKey`).
-  - **Benefit**: Forward secrecy—past sessions stay secure if a key leaks later.
-- **Kyber-512 (Post-Quantum KEM)**:
-  - Server generates a Kyber key pair, client encapsulates a secret.
-  - Both derive the same `kyberShared` secret.
-  - **Benefit**: Quantum resistance—safe against future quantum attacks.
+```bash
+# Terminal 1 - Start the server
+go run server/main.go
 
-#### 3. Hybrid Key Derivation
-- **Method**: Combines `ecdhSharedKey` and `kyberShared` with SHA3-256:
-  ```go
-  hasher := sha3.New256()
-  hasher.Write(ecdhSharedKey)
-  hasher.Write(kyberShared)
-  hybridKey := hasher.Sum(nil)
+# Terminal 2 - Start the client
+go run client/main.go
 
+# Send a file using TLS
+go run client/main.go -file /path/to/your/file.txt
+```
 
-#### 5. Various type of Hybrid encryption
-##### Pure ECDH
-./bin/peer -listen :4433
-./bin/peer -listen :4434 -connect "localhost:4433"
-##### Kyber
-./bin/peer -listen :4433 -pqc kyber
-./bin/peer -listen :4434 -connect "localhost:4433"  -pqc kyber
-##### frodo
-./bin/peer -listen :4433 -pqc frodo
-./bin/peer -listen :4434 -connect "localhost:4433"  -pqc frodo
-##### mlkem
-./bin/peer -listen :4433 -pqc mlkem
-./bin/peer -listen :4434 -connect "localhost:4433"  -pqc mlkem
+### 4. Multi-Peer Chat Example
 
-#### 4. Run via docker
-  ```go
-  docker build -t peer-tls .
-  docker run -it --rm -p 4433:4433 peer-tls -listen :4433
-  docker run -it --rm -p 4433:4433 peer-chat:arm64 -listen :4433
+To create a network of three peers with hybrid encryption:
+
+```bash
+# Terminal 1
+go run peer/main.go -listen :4433 -connect "localhost:4434,localhost:4435" -pqc kyber
+
+# Terminal 2
+go run peer/main.go -listen :4434 -connect "localhost:4433,localhost:4435" -pqc kyber
+
+# Terminal 3
+go run peer/main.go -listen :4435 -connect "localhost:4433,localhost:4434" -pqc kyber
+```
+
+## Traffic Analysis with Wireshark
+
+### TLS Traffic (Peer-to-Peer and Server-Client)
+```bash
+# Filter for TLS traffic on port 4433
+tcp.port == 4433 and tls
+
+# Filter for specific TLS handshake messages
+tcp.port == 4433 and tls.handshake.type == 1  # Client Hello
+tcp.port == 4433 and tls.handshake.type == 2  # Server Hello
+tcp.port == 4433 and tls.handshake.type == 11 # Certificate
+tcp.port == 4433 and tls.handshake.type == 16 # Client Key Exchange
+
+# Filter for application data
+tcp.port == 4433 and tls.record.content_type == 23
+```
+
+### UDP Traffic (Sender/Receiver)
+```bash
+# Filter for UDP traffic on port 8080
+udp.port == 8080
+
+# Filter for specific UDP packets
+udp.port == 8080 and udp.length > 0  # Non-empty UDP packets
+```
+
+### Step-by-Step Analysis
+
+1. **TLS Handshake Analysis**:
+   ```bash
+   # Start capture before running the application
+   # Filter for the complete handshake
+   tcp.port == 4433 and tls.handshake
+   
+   # Then analyze each step:
+   tcp.port == 4433 and tls.handshake.type == 1  # Client Hello
+   tcp.port == 4433 and tls.handshake.type == 2  # Server Hello
+   tcp.port == 4433 and tls.handshake.type == 11 # Certificate
+   tcp.port == 4433 and tls.handshake.type == 16 # Client Key Exchange
+   ```
+
+2. **File Transfer Analysis**:
+   ```bash
+   # For TLS file transfer
+   tcp.port == 4433 and tls.record.content_type == 23 and tcp.len > 1000
+   
+   # For UDP file transfer
+   udp.port == 8080 and udp.length > 1000
+   ```
+
+3. **Chat Message Analysis**:
+   ```bash
+   # For TLS chat messages
+   tcp.port == 4433 and tls.record.content_type == 23 and tcp.len < 1000
+   
+   # For UDP chat messages
+   udp.port == 8080 and udp.length < 1000
+   ```
+
+### Tips for Analysis
+
+1. Start Wireshark before running any application
+2. Use the filters above to focus on specific traffic types
+3. For TLS traffic, you can see the handshake process but not the encrypted content
+4. For UDP traffic, you can see packet sizes and timing
+5. Use the "Follow TCP Stream" feature for TLS connections to see the complete conversation
+6. Use the "Statistics" menu to analyze packet sizes and timing
+
+## File Transfer Capabilities
+
+### Peer-to-Peer File Transfer
+In the peer-to-peer chat interface, you can transfer files using the following commands:
+```bash
+# After connecting to peers, use the chat interface:
+sendfile /path/to/your/file.txt  # Sends file to all connected peers
+```
+
+Features:
+- Files are automatically encrypted using the hybrid encryption scheme
+- Progress is shown during file transfer
+- Files are automatically chunked for large transfers
+- Integrity verification using SHA-256
+- Support for any file type
+
+### TLS File Transfer
+The TLS implementation supports secure file transfer with the following features:
+- Automatic file chunking for large files
+- Progress tracking during transfer
+- Integrity verification using SHA-256
+- Automatic reconnection on network issues
+- Support for any file type
+
+Example usage:
+```bash
+# Server side (receiving files)
+go run server/main.go -receive-dir /path/to/receive/directory
+
+# Client side (sending files)
+go run client/main.go -file /path/to/send/file.txt
+```
+
+### UDP File Transfer
+The UDP implementation provides lightweight file transfer capabilities:
+- Optimized for smaller files
+- Low overhead transfer
+- Quick setup and teardown
+- Support for multiple files in sequence
+
+Example usage:
+```bash
+# Receiver side
+go run cmd/receiver/main.go -port 8080 -receive-dir /path/to/receive/directory
+
+# Sender side
+go run cmd/sender/main.go -addr localhost:8080 -file /path/to/send/file.txt
+```
+
+## Security Features
+
+### Hybrid Encryption Implementation
+
+The system implements a hybrid encryption scheme that combines:
+
+1. **Classical Cryptography (ECDH)**
+   - Elliptic Curve Diffie-Hellman key exchange
+   - P-256 curve for key generation
+   - Provides forward secrecy through ephemeral key pairs
+
+2. **Post-Quantum Cryptography (PQC)**
+   - Supports multiple PQC algorithms:
+     - Kyber-512: Lattice-based KEM
+     - Frodo: LWE-based KEM
+     - ML-KEM: Module Lattice-based KEM
+   - Provides quantum resistance
+
+3. **Hybrid Key Derivation**
+   - Combines ECDH and PQC shared secrets
+   - Uses SHA3-256 for key derivation
+   - Provides both classical and quantum security
+
+4. **Symmetric Encryption**
+   - AES-GCM for message encryption
+   - Provides authenticated encryption
+
+### Protocol Support
+
+1. **TLS Protocol**
+   - Secure TCP-based communication
+   - Self-signed certificates for authentication
+   - Full TLS handshake with hybrid key exchange
+
+2. **UDP Protocol**
+   - Lightweight secure communication
+   - Hybrid encryption for message security
+   - No connection establishment overhead
+
+## Docker Support
+
+You can also run the peer application using Docker:
+
+```bash
+# Build the Docker image
+docker build -t peer-tls .
+
+# Run the peer
+docker run -it --rm -p 4433:4433 peer-tls -listen :4433
+
+# For ARM64 architecture
+docker run -it --rm -p 4433:4433 peer-chat:arm64 -listen :4433
+```
+
+## Notes
+
+- The server uses a self-signed certificate for TLS
+- Default port is 4433, but you can specify different ports
+- The peer application supports multiple post-quantum algorithms
+- UDP implementation provides a lightweight alternative to TLS
+- All cryptographic operations use Go's standard crypto packages and the Kyber implementation
+- File transfers are automatically encrypted using the hybrid encryption scheme
+- Large files are automatically chunked and reassembled during transfer
+- In peer-to-peer chat, use `sendfile <path>` command to transfer files
